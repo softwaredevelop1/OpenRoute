@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenRoute</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+
+<style>
+  body, html { margin:0; padding:0; font-family: sans-serif; }
+  #map { height:100vh; }
+
+  #ui {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    z-index: 1000;
+  }
+
+  input, button {
+    padding: 10px;
+    margin: 5px 0;
+    width: 100%;
+    border-radius: 8px;
+    border: none;
+  }
+
+  button {
+    background: black;
+    color: lime;
+  }
+</style>
+</head>
+
+<body>
+
+<div id="ui">
+  <input id="search" placeholder="Search location...">
+  <button onclick="searchLocation()">Search</button>
+  <button onclick="findPlaces()">Find Restaurants Nearby</button>
+</div>
+
+<div id="map"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+let map = L.map('map').setView([0,0], 2);
+let userLocation = null;
+let markers = [];
+let routeLayer = null;
+let routePoints = [];
+
+// Map tiles
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap'
+}).addTo(map);
+
+// Get user location
+navigator.geolocation.getCurrentPosition(pos => {
+  let lat = pos.coords.latitude;
+  let lon = pos.coords.longitude;
+
+  userLocation = [lat, lon];
+
+  map.setView([lat, lon], 15);
+
+  L.marker([lat, lon]).addTo(map)
+    .bindPopup("You are here 📍")
+    .openPopup();
+});
+
+// SEARCH (Nominatim)
+function searchLocation() {
+  let query = document.getElementById("search").value;
+
+  fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}`)
+    .then(res => res.json())
+    .then(data => {
+      if (data.length > 0) {
+        let place = data[0];
+
+        let lat = parseFloat(place.lat);
+        let lon = parseFloat(place.lon);
+
+        map.setView([lat, lon], 14);
+
+        let marker = L.marker([lat, lon]).addTo(map)
+          .bindPopup(place.display_name)
+          .openPopup();
+
+        markers.push(marker);
+      }
+    });
+}
+
+// PLACES (Overpass)
+function findPlaces() {
+  if (!userLocation) return alert("Location not ready");
+
+  let [lat, lon] = userLocation;
+
+  let query = `
+    [out:json];
+    node["amenity"="restaurant"](around:1000,${lat},${lon});
+    out;
+  `;
+
+  fetch("https://overpass-api.de/api/interpreter", {
+    method: "POST",
+    body: query
+  })
+  .then(res => res.json())
+  .then(data => {
+    data.elements.forEach(place => {
+      let marker = L.marker([place.lat, place.lon]).addTo(map)
+        .bindPopup(place.tags.name || "Restaurant");
+
+      markers.push(marker);
+    });
+  });
+}
+
+// ROUTING (OSRM)
+map.on('click', function(e) {
+  routePoints.push([e.latlng.lng, e.latlng.lat]);
+
+  L.marker(e.latlng).addTo(map);
+
+  if (routePoints.length === 2) {
+    let url = `https://router.project-osrm.org/route/v1/driving/${routePoints[0][0]},${routePoints[0][1]};${routePoints[1][0]},${routePoints[1][1]}?overview=full&geometries=geojson`;
+
+    fetch(url)
+      .then(res => res.json())
+      .then(data => {
+        if (routeLayer) {
+          map.removeLayer(routeLayer);
+        }
+
+        routeLayer = L.geoJSON(data.routes[0].geometry).addTo(map);
+      });
+
+    routePoints = [];
+  }
+});
+</script>
+
+</body>
+</html>
