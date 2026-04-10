@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>OpenRoute Explorer</title>
+  <title>OpenRoute Navigation v2</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
@@ -10,10 +10,7 @@
   <style>
     body { margin: 0; font-family: sans-serif; }
 
-    #map {
-      height: 100vh;
-      width: 100vw;
-    }
+    #map { height: 100vh; width: 100vw; }
 
     #ui {
       position: fixed;
@@ -27,6 +24,7 @@
       padding: 8px;
       border-radius: 10px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+      flex-wrap: wrap;
     }
 
     #searchBox {
@@ -36,24 +34,34 @@
       border: 1px solid #ccc;
     }
 
+    button {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: none;
+      background: #2b7cff;
+      color: white;
+    }
+
+    .modeBtn {
+      background: #ccc;
+      color: black;
+    }
+
+    .activeMode {
+      background: #2b7cff;
+      color: white;
+    }
+
     #infoPanel {
       position: fixed;
       bottom: 10px;
       left: 10px;
       right: 10px;
-      max-height: 220px;
-      overflow-y: auto;
       background: white;
       z-index: 9999;
       padding: 10px;
       border-radius: 10px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-    }
-
-    img {
-      width: 100%;
-      border-radius: 8px;
-      margin-top: 6px;
     }
   </style>
 </head>
@@ -63,13 +71,17 @@
 <div id="ui">
   <input id="searchBox" placeholder="Search place...">
   <button onclick="searchPlace()">Search</button>
+
+  <button id="walkBtn" class="modeBtn activeMode" onclick="setMode('foot')">🚶</button>
+  <button id="driveBtn" class="modeBtn" onclick="setMode('driving')">🚗</button>
+
+  <button onclick="startNavigation()">Directions</button>
 </div>
 
 <div id="map"></div>
-<div id="infoPanel">Search a place to see info</div>
+<div id="infoPanel">Search a place → choose mode → Directions</div>
 
 <script>
-  // ================= MAP =================
   const map = L.map('map').setView([36.5, -5.0], 10);
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -77,49 +89,40 @@
   }).addTo(map);
 
   let userPos = null;
-  let marker = null;
+  let userMarker = null;
+  let destination = null;
+  let destinationMarker = null;
+  let routeLayer = null;
+  let mode = "foot";
+
+  // ================= MODE =================
+  function setMode(m) {
+    mode = m;
+
+    document.getElementById("walkBtn").classList.remove("activeMode");
+    document.getElementById("driveBtn").classList.remove("activeMode");
+
+    if (m === "foot") {
+      document.getElementById("walkBtn").classList.add("activeMode");
+    } else {
+      document.getElementById("driveBtn").classList.add("activeMode");
+    }
+  }
 
   // ================= GPS =================
   navigator.geolocation.watchPosition((pos) => {
     userPos = pos.coords;
 
-    if (!marker) {
-      marker = L.marker([userPos.latitude, userPos.longitude])
+    if (!userMarker) {
+      userMarker = L.marker([userPos.latitude, userPos.longitude])
         .addTo(map)
         .bindPopup("You are here 📍");
 
       map.setView([userPos.latitude, userPos.longitude], 14);
     } else {
-      marker.setLatLng([userPos.latitude, userPos.longitude]);
+      userMarker.setLatLng([userPos.latitude, userPos.longitude]);
     }
   });
-
-  // ================= DISTANCE =================
-  function getDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371;
-    const dLat = (lat2-lat1) * Math.PI/180;
-    const dLon = (lon2-lon1) * Math.PI/180;
-
-    const a =
-      Math.sin(dLat/2) * Math.sin(dLat/2) +
-      Math.cos(lat1*Math.PI/180) *
-      Math.cos(lat2*Math.PI/180) *
-      Math.sin(dLon/2) * Math.sin(dLon/2);
-
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  }
-
-  // ================= WIKIPEDIA INFO =================
-  async function getWiki(place) {
-    try {
-      const res = await fetch(
-        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(place)}`
-      );
-      return await res.json();
-    } catch {
-      return null;
-    }
-  }
 
   // ================= SEARCH =================
   function searchPlace() {
@@ -127,45 +130,67 @@
 
     fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`)
       .then(r => r.json())
-      .then(async data => {
+      .then(data => {
         if (!data.length) return alert("Not found");
 
         const p = data[0];
 
-        map.setView([p.lat, p.lon], 15);
+        destination = {
+          lat: parseFloat(p.lat),
+          lon: parseFloat(p.lon),
+          name: p.display_name
+        };
 
-        L.marker([p.lat, p.lon]).addTo(map).bindPopup(p.display_name);
+        map.setView([destination.lat, destination.lon], 15);
 
-        showPlaceInfo(p);
+        if (!destinationMarker) {
+          destinationMarker = L.marker([destination.lat, destination.lon]).addTo(map);
+        } else {
+          destinationMarker.setLatLng([destination.lat, destination.lon]);
+        }
+
+        destinationMarker.bindPopup(destination.name).openPopup();
+
+        document.getElementById("infoPanel").innerHTML =
+          `<b>${destination.name}</b><br>Ready for directions`;
       });
   }
 
-  // ================= INFO PANEL =================
-  async function showPlaceInfo(place) {
-    const panel = document.getElementById("infoPanel");
-
-    let distText = "";
-
-    if (userPos) {
-      const d = getDistance(
-        userPos.latitude,
-        userPos.longitude,
-        place.lat,
-        place.lon
-      );
-
-      distText = `<p>📏 Distance: ${d.toFixed(2)} km</p>`;
+  // ================= NAVIGATION =================
+  function startNavigation() {
+    if (!userPos || !destination) {
+      return alert("Need location + destination");
     }
 
-    const wiki = await getWiki(place.display_name.split(",")[0]);
+    const url =
+      `https://router.project-osrm.org/route/v1/${mode}/` +
+      `${userPos.longitude},${userPos.latitude};${destination.lon},${destination.lat}` +
+      `?overview=full&geometries=geojson`;
 
-    panel.innerHTML = `
-      <h3>${place.display_name}</h3>
-      ${distText}
-      <p>📍 Lat: ${place.lat}, Lon: ${place.lon}</p>
-      ${wiki?.extract ? `<p>${wiki.extract}</p>` : ""}
-      ${wiki?.thumbnail?.source ? `<img src="${wiki.thumbnail.source}">` : ""}
-    `;
+    fetch(url)
+      .then(r => r.json())
+      .then(data => {
+        const route = data.routes[0];
+
+        if (routeLayer) map.removeLayer(routeLayer);
+
+        routeLayer = L.geoJSON(route.geometry, {
+          style: { color: mode === "driving" ? "red" : "blue", weight: 5 }
+        }).addTo(map);
+
+        map.fitBounds(routeLayer.getBounds());
+
+        const distanceKm = route.distance / 1000;
+
+        let speed = mode === "driving" ? 50 : 5;
+        const etaMin = (distanceKm / speed) * 60;
+
+        document.getElementById("infoPanel").innerHTML = `
+          <b>${mode === "driving" ? "Driving 🚗" : "Walking 🚶"}</b><br>
+          Distance: ${distanceKm.toFixed(2)} km<br>
+          ETA: ${etaMin.toFixed(0)} minutes
+        `;
+      });
   }
 </script>
 
