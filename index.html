@@ -1,65 +1,150 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>OpenRoute</title>
-
+  <title>OpenRoute Core</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 
   <style>
-    html, body {
-      height: 100%;
-      margin: 0;
+    body { margin:0; font-family: sans-serif; }
+    #map { height: 100vh; width: 100vw; }
+
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      z-index: 9999;
+      display: flex;
+      gap: 6px;
     }
 
-    #map {
-      height: 100vh;
-      width: 100%;
+    #searchBox {
+      flex: 1;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+    }
+
+    button {
+      padding: 10px;
+      border-radius: 8px;
+      border: none;
+      background: #2b7cff;
+      color: white;
     }
   </style>
 </head>
 
 <body>
 
+<div id="ui">
+  <input id="searchBox" placeholder="Search place...">
+  <button onclick="searchPlace()">Search</button>
+  <button onclick="loadRestaurants()">🍔</button>
+</div>
+
 <div id="map"></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
 <script>
-  // Default location (London)
+  // ================= MAP INIT =================
   const map = L.map('map').setView([51.505, -0.09], 13);
 
-  // Tile layer
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap'
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19
   }).addTo(map);
 
-  // Test marker
-  L.marker([51.505, -0.09])
-    .addTo(map)
-    .bindPopup("Map is working 🚀")
-    .openPopup();
+  // ================= LIVE LOCATION =================
+  navigator.geolocation.watchPosition((pos) => {
+    const lat = pos.coords.latitude;
+    const lng = pos.coords.longitude;
 
-  // Try user location
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
+    if (!window.userMarker) {
+      window.userMarker = L.marker([lat, lng])
+        .addTo(map)
+        .bindPopup("You are here 📍");
+    } else {
+      window.userMarker.setLatLng([lat, lng]);
+    }
+  });
 
-        map.setView([lat, lng], 15);
+  // ================= SEARCH =================
+  function searchPlace() {
+    const q = document.getElementById("searchBox").value;
 
-        L.marker([lat, lng])
+    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${q}`)
+      .then(res => res.json())
+      .then(data => {
+        if (!data.length) return alert("Not found");
+
+        const lat = data[0].lat;
+        const lon = data[0].lon;
+
+        map.setView([lat, lon], 15);
+
+        L.marker([lat, lon])
           .addTo(map)
-          .bindPopup("You are here 📍");
-      },
-      (err) => {
-        console.log("Location blocked or failed", err);
-      }
-    );
+          .bindPopup(data[0].display_name)
+          .openPopup();
+      });
+  }
+
+  // ================= ROUTING =================
+  let routePoints = [];
+
+  map.on("click", (e) => {
+    routePoints.push([e.latlng.lng, e.latlng.lat]);
+
+    L.marker(e.latlng).addTo(map);
+
+    if (routePoints.length === 2) {
+      const url =
+        `https://router.project-osrm.org/route/v1/driving/` +
+        `${routePoints[0][0]},${routePoints[0][1]};` +
+        `${routePoints[1][0]},${routePoints[1][1]}?overview=full&geometries=geojson`;
+
+      fetch(url)
+        .then(res => res.json())
+        .then(data => {
+          if (window.routeLayer) map.removeLayer(window.routeLayer);
+
+          window.routeLayer = L.geoJSON(data.routes[0].geometry, {
+            style: { color: "blue", weight: 5 }
+          }).addTo(map);
+        });
+
+      routePoints = [];
+    }
+  });
+
+  // ================= NEARBY RESTAURANTS =================
+  function loadRestaurants() {
+    navigator.geolocation.getCurrentPosition((pos) => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+
+      const query = `
+        [out:json];
+        node["amenity"="restaurant"](around:1000,${lat},${lon});
+        out;
+      `;
+
+      fetch("https://overpass-api.de/api/interpreter", {
+        method: "POST",
+        body: query
+      })
+      .then(res => res.json())
+      .then(data => {
+        data.elements.forEach(el => {
+          L.marker([el.lat, el.lon])
+            .addTo(map)
+            .bindPopup(el.tags.name || "Restaurant");
+        });
+      });
+    });
   }
 </script>
 
