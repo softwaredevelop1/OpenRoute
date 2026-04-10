@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>OpenRoute Navigation v2</title>
+  <title>OpenRoute</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
@@ -24,7 +24,6 @@
       padding: 8px;
       border-radius: 10px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-      flex-wrap: wrap;
     }
 
     #searchBox {
@@ -34,34 +33,44 @@
       border: 1px solid #ccc;
     }
 
-    button {
-      padding: 8px 10px;
-      border-radius: 8px;
-      border: none;
-      background: #2b7cff;
-      color: white;
-    }
-
-    .modeBtn {
-      background: #ccc;
-      color: black;
-    }
-
-    .activeMode {
-      background: #2b7cff;
-      color: white;
-    }
-
     #infoPanel {
       position: fixed;
       bottom: 10px;
       left: 10px;
       right: 10px;
+      max-height: 260px;
+      overflow-y: auto;
       background: white;
       z-index: 9999;
       padding: 10px;
       border-radius: 10px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    }
+
+    img {
+      width: 100%;
+      border-radius: 8px;
+      margin-top: 6px;
+    }
+
+    button {
+      padding: 8px;
+      border-radius: 8px;
+      border: none;
+      background: #2b7cff;
+      color: white;
+      margin-top: 6px;
+    }
+
+    .modeBtn {
+      background: #ccc;
+      color: black;
+      margin-right: 5px;
+    }
+
+    .active {
+      background: #2b7cff;
+      color: white;
     }
   </style>
 </head>
@@ -71,15 +80,10 @@
 <div id="ui">
   <input id="searchBox" placeholder="Search place...">
   <button onclick="searchPlace()">Search</button>
-
-  <button id="walkBtn" class="modeBtn activeMode" onclick="setMode('foot')">🚶</button>
-  <button id="driveBtn" class="modeBtn" onclick="setMode('driving')">🚗</button>
-
-  <button onclick="startNavigation()">Directions</button>
 </div>
 
 <div id="map"></div>
-<div id="infoPanel">Search a place → choose mode → Directions</div>
+<div id="infoPanel">Search a place to see info</div>
 
 <script>
   const map = L.map('map').setView([36.5, -5.0], 10);
@@ -94,20 +98,7 @@
   let destinationMarker = null;
   let routeLayer = null;
   let mode = "foot";
-
-  // ================= MODE =================
-  function setMode(m) {
-    mode = m;
-
-    document.getElementById("walkBtn").classList.remove("activeMode");
-    document.getElementById("driveBtn").classList.remove("activeMode");
-
-    if (m === "foot") {
-      document.getElementById("walkBtn").classList.add("activeMode");
-    } else {
-      document.getElementById("driveBtn").classList.add("activeMode");
-    }
-  }
+  let lastPlace = null;
 
   // ================= GPS =================
   navigator.geolocation.watchPosition((pos) => {
@@ -124,16 +115,44 @@
     }
   });
 
+  // ================= DISTANCE =================
+  function getDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2-lat1) * Math.PI/180;
+    const dLon = (lon2-lon1) * Math.PI/180;
+
+    const a =
+      Math.sin(dLat/2) ** 2 +
+      Math.cos(lat1*Math.PI/180) *
+      Math.cos(lat2*Math.PI/180) *
+      Math.sin(dLon/2) ** 2;
+
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  // ================= WIKI =================
+  async function getWiki(place) {
+    try {
+      const res = await fetch(
+        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(place)}`
+      );
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
   // ================= SEARCH =================
   function searchPlace() {
     const q = document.getElementById("searchBox").value;
 
     fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`)
       .then(r => r.json())
-      .then(data => {
+      .then(async data => {
         if (!data.length) return alert("Not found");
 
         const p = data[0];
+        lastPlace = p;
 
         destination = {
           lat: parseFloat(p.lat),
@@ -141,26 +160,82 @@
           name: p.display_name
         };
 
-        map.setView([destination.lat, destination.lon], 15);
+        map.setView([p.lat, p.lon], 15);
 
         if (!destinationMarker) {
-          destinationMarker = L.marker([destination.lat, destination.lon]).addTo(map);
+          destinationMarker = L.marker([p.lat, p.lon]).addTo(map);
         } else {
-          destinationMarker.setLatLng([destination.lat, destination.lon]);
+          destinationMarker.setLatLng([p.lat, p.lon]);
         }
 
-        destinationMarker.bindPopup(destination.name).openPopup();
+        destinationMarker.bindPopup(p.display_name).openPopup();
 
-        document.getElementById("infoPanel").innerHTML =
-          `<b>${destination.name}</b><br>Ready for directions`;
+        showPlaceInfo(p);
       });
   }
 
-  // ================= NAVIGATION =================
-  function startNavigation() {
-    if (!userPos || !destination) {
-      return alert("Need location + destination");
+  // ================= PLACE INFO =================
+  async function showPlaceInfo(place) {
+    const panel = document.getElementById("infoPanel");
+
+    let distText = "";
+
+    if (userPos) {
+      const d = getDistance(
+        userPos.latitude,
+        userPos.longitude,
+        place.lat,
+        place.lon
+      );
+
+      distText = `<p>📏 Distance: ${d.toFixed(2)} km</p>`;
     }
+
+    const wiki = await getWiki(place.display_name.split(",")[0]);
+
+    panel.innerHTML = `
+      <h3>${place.display_name}</h3>
+      ${distText}
+
+      <button onclick="openDirections()">Directions</button>
+
+      ${wiki?.extract ? `<p>${wiki.extract}</p>` : ""}
+      ${wiki?.thumbnail?.source ? `<img src="${wiki.thumbnail.source}">` : ""}
+    `;
+  }
+
+  // ================= DIRECTIONS VIEW =================
+  function openDirections() {
+    const panel = document.getElementById("infoPanel");
+
+    panel.innerHTML = `
+      <button onclick="goBack()">⬅ Back</button><br>
+
+      <button class="modeBtn active" onclick="setMode('foot', this)">🚶 Walk</button>
+      <button class="modeBtn" onclick="setMode('driving', this)">🚗 Drive</button>
+
+      <div id="routeInfo">Calculating...</div>
+    `;
+
+    calculateRoute();
+  }
+
+  function setMode(m, btn) {
+    mode = m;
+
+    document.querySelectorAll(".modeBtn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+
+    calculateRoute();
+  }
+
+  function goBack() {
+    if (lastPlace) showPlaceInfo(lastPlace);
+  }
+
+  // ================= ROUTE =================
+  function calculateRoute() {
+    if (!userPos || !destination) return;
 
     const url =
       `https://router.project-osrm.org/route/v1/${mode}/` +
@@ -181,14 +256,12 @@
         map.fitBounds(routeLayer.getBounds());
 
         const distanceKm = route.distance / 1000;
+        const speed = mode === "driving" ? 50 : 5;
+        const eta = (distanceKm / speed) * 60;
 
-        let speed = mode === "driving" ? 50 : 5;
-        const etaMin = (distanceKm / speed) * 60;
-
-        document.getElementById("infoPanel").innerHTML = `
-          <b>${mode === "driving" ? "Driving 🚗" : "Walking 🚶"}</b><br>
-          Distance: ${distanceKm.toFixed(2)} km<br>
-          ETA: ${etaMin.toFixed(0)} minutes
+        document.getElementById("routeInfo").innerHTML = `
+          <p>Distance: ${distanceKm.toFixed(2)} km</p>
+          <p>ETA: ${eta.toFixed(0)} min</p>
         `;
       });
   }
