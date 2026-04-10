@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>OpenRoute v2</title>
+  <title>OpenRoute Explorer</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
@@ -13,7 +13,6 @@
     #map {
       height: 100vh;
       width: 100vw;
-      z-index: 1;
     }
 
     #ui {
@@ -37,27 +36,24 @@
       border: 1px solid #ccc;
     }
 
-    button {
-      padding: 10px;
-      border-radius: 8px;
-      border: none;
-      background: #2b7cff;
-      color: white;
-    }
-
-    #directionsBox {
+    #infoPanel {
       position: fixed;
       bottom: 10px;
       left: 10px;
       right: 10px;
-      max-height: 160px;
+      max-height: 220px;
       overflow-y: auto;
       background: white;
       z-index: 9999;
       padding: 10px;
       border-radius: 10px;
-      font-size: 14px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    }
+
+    img {
+      width: 100%;
+      border-radius: 8px;
+      margin-top: 6px;
     }
   </style>
 </head>
@@ -70,7 +66,7 @@
 </div>
 
 <div id="map"></div>
-<div id="directionsBox">Click map: start → end route</div>
+<div id="infoPanel">Search a place to see info</div>
 
 <script>
   // ================= MAP =================
@@ -80,116 +76,97 @@
     maxZoom: 19
   }).addTo(map);
 
-  // ================= STATE =================
-  let userMarker = null;
-  let destinationMarker = null;
-  let routeLayer = null;
-  let startPoint = null;
+  let userPos = null;
+  let marker = null;
 
   // ================= GPS =================
-  function startGPS() {
-    if (!navigator.geolocation) return;
+  navigator.geolocation.watchPosition((pos) => {
+    userPos = pos.coords;
 
-    navigator.geolocation.watchPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
+    if (!marker) {
+      marker = L.marker([userPos.latitude, userPos.longitude])
+        .addTo(map)
+        .bindPopup("You are here 📍");
 
-        if (!userMarker) {
-          userMarker = L.marker([lat, lng]).addTo(map).bindPopup("You are here 📍");
-          map.setView([lat, lng], 15);
-        } else {
-          userMarker.setLatLng([lat, lng]);
-        }
-      },
-      (err) => console.log("GPS error:", err),
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-    );
+      map.setView([userPos.latitude, userPos.longitude], 14);
+    } else {
+      marker.setLatLng([userPos.latitude, userPos.longitude]);
+    }
+  });
+
+  // ================= DISTANCE =================
+  function getDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2-lat1) * Math.PI/180;
+    const dLon = (lon2-lon1) * Math.PI/180;
+
+    const a =
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(lat1*Math.PI/180) *
+      Math.cos(lat2*Math.PI/180) *
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   }
 
-  startGPS();
+  // ================= WIKIPEDIA INFO =================
+  async function getWiki(place) {
+    try {
+      const res = await fetch(
+        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(place)}`
+      );
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
 
   // ================= SEARCH =================
-  function setDestination(lat, lon, label) {
-    if (!destinationMarker) {
-      destinationMarker = L.marker([lat, lon]).addTo(map);
-    } else {
-      destinationMarker.setLatLng([lat, lon]);
-    }
-
-    destinationMarker.bindPopup(label).openPopup();
-  }
-
   function searchPlace() {
     const q = document.getElementById("searchBox").value;
 
     fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`)
-      .then(res => res.json())
-      .then(data => {
+      .then(r => r.json())
+      .then(async data => {
         if (!data.length) return alert("Not found");
 
-        const lat = data[0].lat;
-        const lon = data[0].lon;
+        const p = data[0];
 
-        map.setView([lat, lon], 15);
-        setDestination(lat, lon, data[0].display_name);
+        map.setView([p.lat, p.lon], 15);
+
+        L.marker([p.lat, p.lon]).addTo(map).bindPopup(p.display_name);
+
+        showPlaceInfo(p);
       });
   }
 
-  // ================= ROUTING =================
-  function getRoute(fromLat, fromLon, toLat, toLon) {
-    const url =
-      `https://router.project-osrm.org/route/v1/driving/` +
-      `${fromLon},${fromLat};${toLon},${toLat}?overview=full&geometries=geojson&steps=true`;
+  // ================= INFO PANEL =================
+  async function showPlaceInfo(place) {
+    const panel = document.getElementById("infoPanel");
 
-    fetch(url)
-      .then(res => res.json())
-      .then(data => {
-        const route = data.routes[0];
+    let distText = "";
 
-        if (routeLayer) map.removeLayer(routeLayer);
-
-        routeLayer = L.geoJSON(route.geometry, {
-          style: { color: "blue", weight: 5 }
-        }).addTo(map);
-
-        showDirections(route.legs[0].steps);
-      });
-  }
-
-  // ================= DIRECTIONS UI =================
-  function showDirections(steps) {
-    const box = document.getElementById("directionsBox");
-    box.innerHTML = "";
-
-    steps.forEach((step, i) => {
-      const div = document.createElement("div");
-      div.textContent = `${i + 1}. ${step.maneuver.instruction}`;
-      box.appendChild(div);
-    });
-  }
-
-  // ================= MAP CLICK ROUTING =================
-  map.on("click", (e) => {
-    const lat = e.latlng.lat;
-    const lon = e.latlng.lng;
-
-    if (!startPoint) {
-      startPoint = [lat, lon];
-      L.marker([lat, lon]).addTo(map).bindPopup("Start").openPopup();
-    } else {
-      L.marker([lat, lon]).addTo(map).bindPopup("End").openPopup();
-
-      getRoute(
-        startPoint[0],
-        startPoint[1],
-        lat,
-        lon
+    if (userPos) {
+      const d = getDistance(
+        userPos.latitude,
+        userPos.longitude,
+        place.lat,
+        place.lon
       );
 
-      startPoint = null;
+      distText = `<p>📏 Distance: ${d.toFixed(2)} km</p>`;
     }
-  });
+
+    const wiki = await getWiki(place.display_name.split(",")[0]);
+
+    panel.innerHTML = `
+      <h3>${place.display_name}</h3>
+      ${distText}
+      <p>📍 Lat: ${place.lat}, Lon: ${place.lon}</p>
+      ${wiki?.extract ? `<p>${wiki.extract}</p>` : ""}
+      ${wiki?.thumbnail?.source ? `<img src="${wiki.thumbnail.source}">` : ""}
+    `;
+  }
 </script>
 
 </body>
