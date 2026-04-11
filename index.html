@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>OpenRoute</title>
+  <title>OpenRoute Navigation</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
@@ -23,14 +23,11 @@
       background: white;
       padding: 8px;
       border-radius: 10px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
     }
 
     #searchBox {
       flex: 1;
       padding: 10px;
-      border-radius: 8px;
-      border: 1px solid #ccc;
     }
 
     #infoPanel {
@@ -38,25 +35,18 @@
       bottom: 10px;
       left: 10px;
       right: 10px;
-      max-height: 260px;
-      overflow-y: auto;
       background: white;
-      z-index: 9999;
       padding: 10px;
+      max-height: 280px;
+      overflow-y: auto;
       border-radius: 10px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-    }
-
-    img {
-      width: 100%;
-      border-radius: 8px;
-      margin-top: 6px;
+      z-index: 9999;
     }
 
     button {
       padding: 8px;
-      border-radius: 8px;
       border: none;
+      border-radius: 8px;
       background: #2b7cff;
       color: white;
       margin-top: 6px;
@@ -65,12 +55,16 @@
     .modeBtn {
       background: #ccc;
       color: black;
-      margin-right: 5px;
     }
 
     .active {
       background: #2b7cff;
       color: white;
+    }
+
+    .nav-arrow {
+      font-size: 22px;
+      transform: rotate(0deg);
     }
   </style>
 </head>
@@ -83,247 +77,213 @@
 </div>
 
 <div id="map"></div>
-<div id="infoPanel">Search a place to see info</div>
+<div id="infoPanel">Search for a place</div>
 
 <script>
-  const map = L.map('map').setView([36.5, -5.0], 10);
+const map = L.map("map").setView([36.5, -5], 12);
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19
-  }).addTo(map);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19
+}).addTo(map);
 
-  // 🔴 Red marker icon
-  const redIcon = new L.Icon({
-    iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png",
-    shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-    iconSize: [25, 41],
-    iconAnchor: [12, 41]
-  });
+/* ===== ICONS ===== */
+const redIcon = new L.Icon({
+  iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41]
+});
 
-  let userPos = null;
-  let userMarker = null;
-  let destination = null;
-  let destinationMarker = null;
-  let routeLayer = null;
-  let mode = "foot";
-  let lastPlace = null;
+const arrowIcon = L.divIcon({
+  className: "nav-arrow",
+  html: "➤",
+  iconSize: [20, 20],
+  iconAnchor: [10, 10]
+});
 
-  // 🍔 POI layer
-  let poiLayer = L.layerGroup().addTo(map);
+/* ===== STATE ===== */
+let userPos = null;
+let userMarker = null;
+let headingMarker = null;
 
-  // ================= GPS =================
-  navigator.geolocation.watchPosition((pos) => {
-    userPos = pos.coords;
+let destination = null;
+let destinationMarker = null;
 
-    if (!userMarker) {
-      userMarker = L.marker([userPos.latitude, userPos.longitude])
-        .addTo(map)
-        .bindPopup("You are here 📍");
+let routeLayer = null;
+let navigationActive = false;
+let followMode = false;
 
-      map.setView([userPos.latitude, userPos.longitude], 14);
+let mode = "foot";
+let lastPlace = null;
+
+/* ===== GPS ===== */
+navigator.geolocation.watchPosition(pos => {
+  userPos = pos.coords;
+  const latlng = [userPos.latitude, userPos.longitude];
+
+  if (navigationActive) {
+    if (!headingMarker) {
+      headingMarker = L.marker(latlng, { icon: arrowIcon }).addTo(map);
     } else {
-      userMarker.setLatLng([userPos.latitude, userPos.longitude]);
-    }
-  });
-
-  // ================= DISTANCE =================
-  function getDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371;
-    const dLat = (lat2-lat1) * Math.PI/180;
-    const dLon = (lon2-lon1) * Math.PI/180;
-
-    const a =
-      Math.sin(dLat/2) ** 2 +
-      Math.cos(lat1*Math.PI/180) *
-      Math.cos(lat2*Math.PI/180) *
-      Math.sin(dLon/2) ** 2;
-
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  }
-
-  // ================= WIKI =================
-  async function getWiki(place) {
-    try {
-      const res = await fetch(
-        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(place)}`
-      );
-      return await res.json();
-    } catch {
-      return null;
-    }
-  }
-
-  // ================= SEARCH =================
-  function searchPlace() {
-    const q = document.getElementById("searchBox").value;
-
-    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`)
-      .then(r => r.json())
-      .then(async data => {
-        if (!data.length) return alert("Not found");
-
-        const p = data[0];
-        lastPlace = p;
-
-        destination = {
-          lat: parseFloat(p.lat),
-          lon: parseFloat(p.lon),
-          name: p.display_name
-        };
-
-        map.setView([p.lat, p.lon], 15);
-
-        if (!destinationMarker) {
-          destinationMarker = L.marker([p.lat, p.lon], { icon: redIcon }).addTo(map);
-        } else {
-          destinationMarker.setLatLng([p.lat, p.lon]);
-        }
-
-        destinationMarker.bindPopup(p.display_name).openPopup();
-
-        showPlaceInfo(p);
-      });
-  }
-
-  // ================= PLACE INFO =================
-  async function showPlaceInfo(place) {
-    const panel = document.getElementById("infoPanel");
-
-    let distText = "";
-
-    if (userPos) {
-      const d = getDistance(
-        userPos.latitude,
-        userPos.longitude,
-        place.lat,
-        place.lon
-      );
-
-      distText = `<p>📏 Distance: ${d.toFixed(2)} km</p>`;
+      headingMarker.setLatLng(latlng);
     }
 
-    const wiki = await getWiki(place.display_name.split(",")[0]);
-
-    panel.innerHTML = `
-      <h3>${place.display_name}</h3>
-      ${distText}
-
-      <button onclick="openDirections()">Directions</button>
-
-      ${wiki?.extract ? `<p>${wiki.extract}</p>` : ""}
-      ${wiki?.thumbnail?.source ? `<img src="${wiki.thumbnail.source}">` : ""}
-    `;
-  }
-
-  // ================= DIRECTIONS =================
-  function openDirections() {
-    const panel = document.getElementById("infoPanel");
-
-    panel.innerHTML = `
-      <button onclick="goBack()">⬅ Back</button><br>
-
-      <button class="modeBtn active" onclick="setMode('foot', this)">🚶 Walk</button>
-      <button class="modeBtn" onclick="setMode('driving', this)">🚗 Drive</button>
-
-      <div id="routeInfo">Calculating...</div>
-    `;
-
-    calculateRoute();
-  }
-
-  function setMode(m, btn) {
-    mode = m;
-
-    document.querySelectorAll(".modeBtn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-
-    calculateRoute();
-  }
-
-  function goBack() {
-    // 🧹 REMOVE ROUTE
-    if (routeLayer) {
-      map.removeLayer(routeLayer);
-      routeLayer = null;
+    if (followMode) {
+      map.setView(latlng, map.getZoom());
     }
 
-    if (lastPlace) showPlaceInfo(lastPlace);
-  }
-
-  // ================= ROUTE =================
-  function calculateRoute() {
-    if (!userPos || !destination) return;
-
-    const url =
-      `https://router.project-osrm.org/route/v1/${mode}/` +
-      `${userPos.longitude},${userPos.latitude};${destination.lon},${destination.lat}` +
-      `?overview=full&geometries=geojson`;
-
-    fetch(url)
-      .then(r => r.json())
-      .then(data => {
-        const route = data.routes[0];
-
-        if (routeLayer) map.removeLayer(routeLayer);
-
-        routeLayer = L.geoJSON(route.geometry, {
-          style: { color: mode === "driving" ? "red" : "blue", weight: 5 }
-        }).addTo(map);
-
-        map.fitBounds(routeLayer.getBounds());
-
-        const distanceKm = route.distance / 1000;
-        const speed = mode === "driving" ? 50 : 5;
-        const eta = (distanceKm / speed) * 60;
-
-        document.getElementById("routeInfo").innerHTML = `
-          <p>Distance: ${distanceKm.toFixed(2)} km</p>
-          <p>ETA: ${eta.toFixed(0)} min</p>
-        `;
-      });
-  }
-
-  // ================= POIs =================
-  function loadPOIs() {
-    const zoom = map.getZoom();
-
-    if (zoom < 15) {
-      poiLayer.clearLayers();
-      return;
+  } else {
+    if (!userMarker) {
+      userMarker = L.marker(latlng).addTo(map).bindPopup("You are here 📍");
+      map.setView(latlng, 14);
+    } else {
+      userMarker.setLatLng(latlng);
     }
+  }
+});
 
-    const bounds = map.getBounds();
+/* ===== SEARCH ===== */
+function searchPlace() {
+  const q = document.getElementById("searchBox").value;
 
-    const query = `
-      [out:json];
-      (
-        node["amenity"](south:${bounds.getSouth()},west:${bounds.getWest()},north:${bounds.getNorth()},east:${bounds.getEast()});
-      );
-      out;
-    `;
-
-    fetch("https://overpass-api.de/api/interpreter", {
-      method: "POST",
-      body: query
-    })
-    .then(res => res.json())
+  fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`)
+    .then(r => r.json())
     .then(data => {
-      poiLayer.clearLayers();
+      if (!data.length) return alert("Not found");
 
-      data.elements.forEach(el => {
-        if (!el.tags || !el.tags.name) return;
+      const p = data[0];
+      lastPlace = p;
 
-        const marker = L.circleMarker([el.lat, el.lon], {
-          radius: 5
-        }).bindPopup(el.tags.name);
+      destination = {
+        lat: +p.lat,
+        lon: +p.lon,
+        name: p.display_name
+      };
 
-        poiLayer.addLayer(marker);
-      });
+      map.setView([p.lat, p.lon], 15);
+
+      if (!destinationMarker) {
+        destinationMarker = L.marker([p.lat, p.lon], { icon: redIcon }).addTo(map);
+      } else {
+        destinationMarker.setLatLng([p.lat, p.lon]);
+      }
+
+      destinationMarker.bindPopup(p.display_name).openPopup();
+      showPlaceInfo(p);
     });
+}
+
+/* ===== INFO ===== */
+function showPlaceInfo(place) {
+  const panel = document.getElementById("infoPanel");
+
+  panel.innerHTML = `
+    <h3>${place.display_name}</h3>
+    <button onclick="openDirections()">Directions</button>
+  `;
+}
+
+/* ===== DIRECTIONS UI ===== */
+function openDirections() {
+  document.getElementById("infoPanel").innerHTML = `
+    <button onclick="goBack()">⬅ Back</button><br>
+
+    <button class="modeBtn active" onclick="setMode('foot', this)">🚶 Walk</button>
+    <button class="modeBtn" onclick="setMode('driving', this)">🚗 Drive</button>
+
+    <button onclick="startNavigation()">▶ Start</button>
+    <button onclick="stopNavigation()">⏹ Stop</button>
+    <button onclick="recenter()">🎯 Recenter</button>
+
+    <div id="routeInfo">Calculating…</div>
+  `;
+
+  calculateRoute();
+}
+
+function setMode(m, btn) {
+  mode = m;
+  document.querySelectorAll(".modeBtn").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  calculateRoute();
+}
+
+/* ===== NAVIGATION CONTROL ===== */
+function startNavigation() {
+  navigationActive = true;
+  followMode = true;
+
+  if (userMarker) {
+    map.removeLayer(userMarker);
+    userMarker = null;
+  }
+}
+
+function stopNavigation() {
+  navigationActive = false;
+  followMode = false;
+
+  if (headingMarker) {
+    map.removeLayer(headingMarker);
+    headingMarker = null;
+  }
+}
+
+function recenter() {
+  followMode = true;
+}
+
+function goBack() {
+  if (routeLayer) {
+    map.removeLayer(routeLayer);
+    routeLayer = null;
   }
 
-  map.on("moveend", loadPOIs);
-</script>
+  navigationActive = false;
+  followMode = false;
 
+  if (headingMarker) {
+    map.removeLayer(headingMarker);
+    headingMarker = null;
+  }
+
+  if (lastPlace) showPlaceInfo(lastPlace);
+}
+
+/* ===== ROUTING ===== */
+function calculateRoute() {
+  if (!userPos || !destination) return;
+
+  const url =
+    `https://router.project-osrm.org/route/v1/${mode}/` +
+    `${userPos.longitude},${userPos.latitude};${destination.lon},${destination.lat}` +
+    `?overview=full&geometries=geojson`;
+
+  fetch(url)
+    .then(r => r.json())
+    .then(data => {
+      const route = data.routes[0];
+
+      if (routeLayer) map.removeLayer(routeLayer);
+
+      routeLayer = L.geoJSON(route.geometry, {
+        style: { color: "blue", weight: 5 }
+      }).addTo(map);
+
+      map.fitBounds(routeLayer.getBounds());
+
+      const km = route.distance / 1000;
+      const minutesTotal = Math.round((km / (mode === "driving" ? 50 : 5)) * 60);
+
+      const hrs = Math.floor(minutesTotal / 60);
+      const mins = minutesTotal % 60;
+
+      const etaText = hrs > 0 ? `${hrs} hr ${mins} min` : `${mins} min`;
+
+      document.getElementById("routeInfo").innerHTML =
+        `<p>Distance: ${km.toFixed(2)} km</p><p>ETA: ${etaText}</p>`;
+    });
+}
+</script>
 </body>
 </html>
